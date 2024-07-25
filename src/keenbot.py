@@ -4,12 +4,12 @@ import streamlit as st
 import boto3
 import pickle
 import json
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, select
+from sqlalchemy import MetaData, Column, Integer, String, DateTime, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.sql import func
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationChain
-from langchain.llms.bedrock import Bedrock
+from langchain_community.llms.bedrock import Bedrock
 from langchain.prompts import PromptTemplate
 from langchain.schema import HumanMessage, AIMessage
 
@@ -43,45 +43,30 @@ class Model(Base):
     name = Column(String, nullable=False)
     configuration = Column(String, nullable=False)
 
-# Streamlit SQLAlchemy connection
-class SQLAlchemyConnection(st.connection):
-    def __init__(self, url: str, **kwargs):
-        super().__init__(**kwargs)
-        self._url = url
-        self._engine = None
-
-    def _connect(self):
-        self._engine = create_engine(self._url)
-        Base.metadata.create_all(self._engine)
-        return sessionmaker(bind=self._engine)
-
-    def query(self, query, **kwargs):
-        Session = self._instance
-        with Session() as session:
-            result = session.execute(query, kwargs)
-            return result.fetchall()
-
-    def add(self, obj):
-        Session = self._instance
-        with Session() as session:
-            session.add(obj)
-            session.commit()
-
-    def update(self, obj):
-        Session = self._instance
-        with Session() as session:
-            session.merge(obj)
-            session.commit()
-
 # Initialize database connection
 @st.cache_resource
 def init_connection():
-    return SQLAlchemyConnection("sqlite:///chatbot.db")
+    conn = st.connection('keenbot_db', type='sql')
+    # Define metadata for the table
+    #metadata = MetaData()
+
+    # Define the table with appropriate columns
+    #Table('conversations', metadata,
+    #      Column('id', Integer, primary_key=True),
+    #      Column('name', String, nullable=False),
+    #      Column('system_prompt', String, nullable=False),
+    #      Column('model_id', Integer, ForeignKey('models.id')),
+    #      Column('created_at', DateTime(timezone=True), server_default=func.now())
+    #      )
+
+    # Create the table if it doesn't exist
+    Base.metadata.create_all(conn.engine)
+    return conn
 
 # Function to add or edit a model
 def add_or_edit_model(conn, name, configuration, model_id=None):
     if model_id:
-        model = conn.query(select(Model).filter_by(id=model_id))[0]
+        model = conn.session.query(Model).filter_by(id=model_id)[0]
         model.name = name
         model.configuration = configuration
         conn.update(model)
@@ -91,11 +76,11 @@ def add_or_edit_model(conn, name, configuration, model_id=None):
 
 # Function to get all models
 def get_models(conn):
-    return conn.query(select(Model))
+    return conn.session.query(Model)
 
 # Function to get model by id
 def get_model(conn, model_id):
-    result = conn.query(select(Model).filter_by(id=model_id))
+    result = conn.session.query(Model).filter_by(id=model_id)
     if result:
         model = result[0]
         return model.name, model.configuration
@@ -115,16 +100,16 @@ def save_message(conn, conversation_id, message):
 
 # Function to load messages for a conversation
 def load_messages(conn, conversation_id):
-    messages = conn.query(select(Message).filter_by(conversation_id=conversation_id).order_by(Message.created_at))
+    messages = conn.session.query(Message).filter_by(conversation_id=conversation_id).order_by(Message.created_at)
     return [deserialize_message(message.message) for message in messages]
 
 # Function to get all conversations
 def get_conversations(conn):
-    return conn.query(select(Conversation).order_by(Conversation.created_at.desc()))
+    return conn.session.query(Conversation).order_by(Conversation.created_at.desc())
 
 # Function to get system prompt and model for a conversation
 def get_conversation_details(conn, conversation_id):
-    result = conn.query(select(Conversation).filter_by(id=conversation_id))
+    result = conn.session.query(Conversation).filter_by(id=conversation_id)
     if result:
         conversation = result[0]
         return conversation.system_prompt, conversation.model_id
@@ -217,12 +202,12 @@ def main():
                     add_or_edit_model(conn, new_model_name, new_model_config)
                     st.success("Model added successfully!")
                     st.session_state.add_model = False
-                    st.experimental_rerun()
+                    st.rerun()
                 except json.JSONDecodeError:
                     st.error("Invalid JSON configuration. Please check and try again.")
             if st.form_submit_button("Cancel"):
                 st.session_state.add_model = False
-                st.experimental_rerun()
+                st.rerun()
 
     # Edit Model dialog
     if 'edit_model' in st.session_state and st.session_state.edit_model:
@@ -238,12 +223,12 @@ def main():
                     add_or_edit_model(conn, edit_model_name, edit_model_config, model_to_edit.id)
                     st.success("Model updated successfully!")
                     st.session_state.edit_model = False
-                    st.experimental_rerun()
+                    st.rerun()
                 except json.JSONDecodeError:
                     st.error("Invalid JSON configuration. Please check and try again.")
             if st.form_submit_button("Cancel"):
                 st.session_state.edit_model = False
-                st.experimental_rerun()
+                st.rerun()
 
     # New conversation creation
     st.sidebar.subheader("Create New Conversation")
@@ -256,7 +241,7 @@ def main():
             model_id = next(model.id for model in models if model.name == new_conversation_model)
             conversation_id = create_conversation(conn, new_conversation, new_system_prompt, model_id)
             st.session_state.current_conversation = conversation_id
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.sidebar.warning("Please provide a conversation name and select a model.")
 
