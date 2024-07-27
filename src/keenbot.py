@@ -41,6 +41,7 @@ class Model(Base):
     __tablename__ = 'models'
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
+    bedrock_model_id = Column(String, nullable=False)
     configuration = Column(String, nullable=False)
 
 # Initialize database connection
@@ -64,10 +65,11 @@ def init_connection():
     return conn
 
 # Function to add or edit a model
-def add_or_edit_model(conn, name, configuration, model_id=None):
+def add_or_edit_model(conn, name, bedrock_model_id, configuration, model_id=None):
     if model_id:
         model = conn.session.query(Model).filter_by(id=model_id)[0]
         model.name = name
+        model.bedrock_model_id = bedrock_model_id
         model.configuration = configuration
         conn.update(model)
     else:
@@ -122,33 +124,20 @@ def serialize_message(message):
 def deserialize_message(serialized_message):
     return pickle.loads(serialized_message)
 
-# Function to create a new conversation chain
-def create_conversation_chain(conn, conversation_id=None):
+# Function to create a new conversation chain; must only be called when conversation_id is not None, but
+# could still be a new conversation with no history.
+def create_conversation_chain(conn, conversation_id):
     memory = ConversationBufferMemory(return_messages=True)
-    if conversation_id:
-        messages = load_messages(conn, conversation_id)
-        memory.chat_memory.messages = messages
-        system_prompt, model_id = get_conversation_details(conn, conversation_id)
-        if model_id:
-            model_name, model_config = get_model(conn, model_id)
-            llm = Bedrock(
-                model_id=model_name,
-                client=bedrock_client,
-                model_kwargs=json.loads(model_config)
-            )
-        else:
-            llm = Bedrock(
-                model_id="anthropic.claude-3-5-sonnet-20240620-v1:0",
-                client=bedrock_client,
-                model_kwargs={"max_tokens_to_sample": 500, "temperature": 0.7}
-            )
-    else:
-        system_prompt = DEFAULT_SYSTEM_PROMPT
-        llm = Bedrock(
-            model_id="anthropic.claude-3-5-sonnet-20240620-v1:0",
-            client=bedrock_client,
-            model_kwargs={"max_tokens_to_sample": 500, "temperature": 0.7}
-        )
+    
+    messages = load_messages(conn, conversation_id)
+    memory.chat_memory.messages = messages
+    system_prompt, model_id = get_conversation_details(conn, conversation_id)
+    model_name, model_config = get_model(conn, model_id)
+    llm = Bedrock(
+        model_id=model_name,
+        client=bedrock_client,
+        model_kwargs=json.loads(model_config)
+    )
     
     prompt_template = f"{system_prompt}\n\nCurrent conversation:\n{{history}}\nHuman: {{input}}\nClaude:"
     
@@ -194,12 +183,13 @@ def main():
         with st.sidebar.form("add_model_form"):
             st.subheader("Add New Model")
             new_model_name = st.text_input("Model Name")
+            new_bedrock_model_id = st.text_input("Bedrock model_id")
             new_model_config = st.text_area("Model Configuration (JSON)")
             submitted = st.form_submit_button("Proceed")
             if submitted:
                 try:
                     json.loads(new_model_config)  # Validate JSON
-                    add_or_edit_model(conn, new_model_name, new_model_config)
+                    add_or_edit_model(conn, new_model_name, new_bedrock_model_id, new_model_config)
                     st.success("Model added successfully!")
                     st.session_state.add_model = False
                     st.rerun()
@@ -215,12 +205,13 @@ def main():
             st.subheader("Edit Model")
             model_to_edit = next(model for model in models if model.name == selected_model)
             edit_model_name = st.text_input("Model Name", value=model_to_edit.name)
+            edit_bedrock_model_id = st.text_input("Model Name", value=model_to_edit.bedrock_model_id)
             edit_model_config = st.text_area("Model Configuration (JSON)", value=model_to_edit.configuration)
             submitted = st.form_submit_button("Proceed")
             if submitted:
                 try:
                     json.loads(edit_model_config)  # Validate JSON
-                    add_or_edit_model(conn, edit_model_name, edit_model_config, model_to_edit.id)
+                    add_or_edit_model(conn, edit_model_name, edit_bedrock_model_id, edit_model_config, model_to_edit.id)
                     st.success("Model updated successfully!")
                     st.session_state.edit_model = False
                     st.rerun()
@@ -257,7 +248,7 @@ def main():
             st.session_state.current_conversation = conversation_id
 
     # Main chat interface
-    st.title("Claude 3.5 Sonnet Chatbot")
+    st.title("KeenBot Chatbot")
 
     # Display current system prompt and model
     if st.session_state.current_conversation:
