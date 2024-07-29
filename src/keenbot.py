@@ -44,23 +44,22 @@ class Model(Base):
     bedrock_model_id = Column(String, nullable=False)
     configuration = Column(String, nullable=False)
 
+# Streamlit SQLAlchemy functions
+def sql_add(conn, obj):
+    with conn.session as s:
+        s.add(obj)
+        s.commit()
+
+def sql_update(conn, obj):
+    with conn.session as s:
+        s.merge(obj)
+        s.commit()
+
 # Initialize database connection
 @st.cache_resource
 def init_connection():
-    conn = st.connection('keenbot_db', type='sql')
-    # Define metadata for the table
-    #metadata = MetaData()
-
-    # Define the table with appropriate columns
-    #Table('conversations', metadata,
-    #      Column('id', Integer, primary_key=True),
-    #      Column('name', String, nullable=False),
-    #      Column('system_prompt', String, nullable=False),
-    #      Column('model_id', Integer, ForeignKey('models.id')),
-    #      Column('created_at', DateTime(timezone=True), server_default=func.now())
-    #      )
-
-    # Create the table if it doesn't exist
+    conn = st.connection('keenbot_db', type = 'sql')
+    # Create tables if they don't exist
     Base.metadata.create_all(conn.engine)
     return conn
 
@@ -68,13 +67,14 @@ def init_connection():
 def add_or_edit_model(conn, name, bedrock_model_id, configuration, model_id=None):
     if model_id:
         model = conn.session.query(Model).filter_by(id=model_id)[0]
+        old_name = model.name
         model.name = name
         model.bedrock_model_id = bedrock_model_id
         model.configuration = configuration
-        conn.update(model)
+        sql_update(conn, model)
     else:
-        new_model = Model(name=name, configuration=configuration)
-        conn.add(new_model)
+        new_model = Model(name=name, bedrock_model_id=bedrock_model_id, configuration=configuration)
+        sql_add(conn, new_model)
 
 # Function to get all models
 def get_models(conn):
@@ -91,14 +91,14 @@ def get_model(conn, model_id):
 # Function to create a new conversation
 def create_conversation(conn, name, system_prompt, model_id):
     new_conversation = Conversation(name=name, system_prompt=system_prompt, model_id=model_id)
-    conn.add(new_conversation)
+    sql_add(conn, new_conversation)
     return new_conversation.id
 
 # Function to save a message
 def save_message(conn, conversation_id, message):
     serialized_message = serialize_message(message)
     new_message = Message(conversation_id=conversation_id, message=serialized_message)
-    conn.add(new_message)
+    sql_add(conn, new_message)
 
 # Function to load messages for a conversation
 def load_messages(conn, conversation_id):
@@ -151,6 +151,43 @@ def create_conversation_chain(conn, conversation_id):
         prompt=PROMPT
     )
 
+# Add Model dialog
+@st.experimental_dialog("Add New Model")
+def add_model_dialog(conn):
+    with st.form("add_model_form"):
+        new_model_name = st.text_input("Model Name")
+        new_bedrock_model_id = st.text_input("Bedrock model_id")
+        new_model_config = st.text_area("Model Configuration (JSON)")
+        if st.form_submit_button("Submit"):
+            try:
+                json.loads(new_model_config)  # Validate JSON
+                add_or_edit_model(conn, new_model_name, new_bedrock_model_id, new_model_config)
+                st.success("Model added successfully!")
+                st.session_state.add_model = False
+                st.rerun()
+            except json.JSONDecodeError:
+                st.error("Invalid JSON configuration. Please check and try again.")
+            except Exception as e:
+                st.error(f'Add model error {type(e).__name__}: {str(e)}')
+
+@st.experimental_dialog("Edit Existing Model")
+def edit_model_dialog(conn, model_to_edit):
+    with st.form("edit_model_form"):
+        edit_model_name = st.text_input("Model Name", value=model_to_edit.name)
+        edit_bedrock_model_id = st.text_input("Model Name", value=model_to_edit.bedrock_model_id)
+        edit_model_config = st.text_area("Model Configuration (JSON)", value=model_to_edit.configuration)
+        if st.form_submit_button("Submit"):
+            try:
+                json.loads(edit_model_config)  # Validate JSON
+                add_or_edit_model(conn, edit_model_name, edit_bedrock_model_id, edit_model_config, model_to_edit.id)
+                st.success("Model updated successfully!")
+                st.session_state.edit_model = False
+                st.rerun()
+            except json.JSONDecodeError:
+                st.error("Invalid JSON configuration. Please check and try again.")
+            except Exception as e:
+                st.error(f'Edit model error {type(e).__name__}: {str(e)}')
+
 # Main Streamlit app
 def main():
     # Initialize database connection
@@ -172,69 +209,14 @@ def main():
     col1, col2 = st.sidebar.columns(2)
     if col1.button("Add Model"):
         st.session_state.add_model = True
+        add_model_dialog(conn)
     if col2.button("Edit Model"):
         if selected_model:
             st.session_state.edit_model = True
+            model_to_edit = next(model for model in models if model.name == selected_model)
+            edit_model_dialog(conn, model_to_edit)
         else:
             st.sidebar.warning("Please select a model to edit.")
-
-    # Add Model dialog
-    if 'add_model' in st.session_state and st.session_state.add_model:
-        with st.sidebar.form("add_model_form"):
-            st.subheader("Add New Model")
-            new_model_name = st.text_input("Model Name")
-            new_bedrock_model_id = st.text_input("Bedrock model_id")
-            new_model_config = st.text_area("Model Configuration (JSON)")
-            submitted = st.form_submit_button("Proceed")
-            if submitted:
-                try:
-                    json.loads(new_model_config)  # Validate JSON
-                    add_or_edit_model(conn, new_model_name, new_bedrock_model_id, new_model_config)
-                    st.success("Model added successfully!")
-                    st.session_state.add_model = False
-                    st.rerun()
-                except json.JSONDecodeError:
-                    st.error("Invalid JSON configuration. Please check and try again.")
-            if st.form_submit_button("Cancel"):
-                st.session_state.add_model = False
-                st.rerun()
-
-    # Edit Model dialog
-    if 'edit_model' in st.session_state and st.session_state.edit_model:
-        with st.sidebar.form("edit_model_form"):
-            st.subheader("Edit Model")
-            model_to_edit = next(model for model in models if model.name == selected_model)
-            edit_model_name = st.text_input("Model Name", value=model_to_edit.name)
-            edit_bedrock_model_id = st.text_input("Model Name", value=model_to_edit.bedrock_model_id)
-            edit_model_config = st.text_area("Model Configuration (JSON)", value=model_to_edit.configuration)
-            submitted = st.form_submit_button("Proceed")
-            if submitted:
-                try:
-                    json.loads(edit_model_config)  # Validate JSON
-                    add_or_edit_model(conn, edit_model_name, edit_bedrock_model_id, edit_model_config, model_to_edit.id)
-                    st.success("Model updated successfully!")
-                    st.session_state.edit_model = False
-                    st.rerun()
-                except json.JSONDecodeError:
-                    st.error("Invalid JSON configuration. Please check and try again.")
-            if st.form_submit_button("Cancel"):
-                st.session_state.edit_model = False
-                st.rerun()
-
-    # New conversation creation
-    st.sidebar.subheader("Create New Conversation")
-    new_conversation = st.sidebar.text_input("New conversation label")
-    new_system_prompt = st.sidebar.text_area("System prompt for new conversation", DEFAULT_SYSTEM_PROMPT)
-    new_conversation_model = st.sidebar.selectbox("Model for new conversation", model_names)
-
-    if st.sidebar.button("Create New Conversation"):
-        if new_conversation and new_conversation_model:
-            model_id = next(model.id for model in models if model.name == new_conversation_model)
-            conversation_id = create_conversation(conn, new_conversation, new_system_prompt, model_id)
-            st.session_state.current_conversation = conversation_id
-            st.rerun()
-        else:
-            st.sidebar.warning("Please provide a conversation name and select a model.")
 
     # Existing conversation selection
     st.sidebar.subheader("Select Existing Conversation")
@@ -246,6 +228,20 @@ def main():
         conversation_id = int(selected_conversation.split(":")[0])
         if st.session_state.current_conversation != conversation_id:
             st.session_state.current_conversation = conversation_id
+
+    # New conversation creation
+    st.sidebar.subheader("Create New Conversation")
+    new_conversation = st.sidebar.text_input("New conversation label")
+    new_system_prompt = st.sidebar.text_area("System prompt for new conversation", DEFAULT_SYSTEM_PROMPT)
+
+    if st.sidebar.button("Create New Conversation"):
+        if new_conversation and selected_model:
+            model_id = next(model.id for model in models if model.name == selected_model)
+            conversation_id = create_conversation(conn, new_conversation, new_system_prompt, model_id)
+            st.session_state.current_conversation = conversation_id
+            st.rerun()
+        else:
+            st.sidebar.warning("Please provide a conversation name and select a model.")
 
     # Main chat interface
     st.title("KeenBot Chatbot")

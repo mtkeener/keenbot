@@ -9,6 +9,8 @@ keenbot$ python -m venv venv
 keenbot$ venv\Scripts\activate
 
 keenbot$ pip install -r requirements.txt
+
+keenbot$ streamlit run src/keenbot.py
 ```
 
 ## Chat Comment History
